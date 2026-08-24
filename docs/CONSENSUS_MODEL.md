@@ -173,3 +173,33 @@ The structured layer therefore cannot make a bundle `ADMISSIBLE`.
 
 This prevents structural diversity, separate domains, or separate
 authority IDs from being mistaken for genuinely independent evidence.
+
+## Exact provenance binding
+
+A semantic relationship label alone is insufficient for consequential
+independence.
+
+For every corroborator, semantic consensus binds:
+
+- exact authority revision
+- relationship: `INDEPENDENT`, `DERIVED`, or `UNVERIFIED`
+- exact provenance basis code
+- exact upstream authority revision when derived
+- material-conflict flag
+
+An `INDEPENDENT` classification requires an accepted independent basis
+and no upstream authority.
+
+A `DERIVED` classification must identify another exact authority
+revision supplied in the bundle. Self-dependency is invalid.
+
+If an apparent dependency cannot be safely bound to a supplied
+authority, the result is `UNVERIFIED` and the source does not count
+toward quorum.
+
+A source's own statement that it is independent is not sufficient
+evidence of independence.
+
+Leader and validator must agree on these exact provenance fields.
+The contract, not the LLM, derives the qualifying authority set,
+independent quorum count, conflict result, and final admissibility.
