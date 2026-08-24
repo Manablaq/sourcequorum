@@ -125,3 +125,27 @@ is insufficient.
 Direct Mode tests must replace leader web/LLM mocks before
 `run_validator()` and prove disagreement when the validator sees
 different consequential evidence.
+
+## Bounded evidence enumeration
+
+SourceQuorum v1 permits at most 16 evidence records in one bundle.
+
+This is a SourceQuorum protocol limit, not a GenLayer platform limit.
+
+The purpose is to keep every review attempt bounded and reproducible:
+
+- one primary record
+- up to fifteen corroborating records
+- deterministic bundle-indexed enumeration
+- no scan over unrelated global evidence records
+- bounded external requests per validator
+
+`bundle_record_ids` is an immutable 1-based bundle-local index populated
+only when an evidence record is added.
+
+Because frozen bundles reject further record additions, the indexed
+evidence set reviewed by validators cannot change after bundle freeze.
+
+A policy whose minimum independent corroborator requirement cannot fit
+within the v1 bundle limit is rejected when the policy version is
+created.

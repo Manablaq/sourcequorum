@@ -18,6 +18,12 @@ REVIEW_CONFLICTED = "CONFLICTED"
 REVIEW_INSUFFICIENT_CORROBORATION = "INSUFFICIENT_CORROBORATION"
 REVIEW_UNAVAILABLE = "UNAVAILABLE"
 
+# SourceQuorum v1 protocol bound.
+#
+# This is not a GenLayer platform limit. It bounds the number of
+# external evidence fetches and semantic reviews required per bundle.
+MAX_BUNDLE_EVIDENCE_RECORDS = 16
+
 
 @allow_storage
 @dataclass
@@ -153,6 +159,9 @@ class SourceQuorum(gl.Contract):
     bundle_exists: TreeMap[str, bool]
     bundles: TreeMap[str, EvidenceBundle]
     bundle_authority_used: TreeMap[str, bool]
+
+    # 1-based immutable record index for bounded review enumeration.
+    bundle_record_ids: TreeMap[str, u256]
     bundle_superseded_by: TreeMap[str, u256]
 
     record_exists: TreeMap[str, bool]
@@ -598,6 +607,11 @@ class SourceQuorum(gl.Contract):
                 "At least one independent corroborator is required"
             )
 
+        if minimum_independent_corroborators >= MAX_BUNDLE_EVIDENCE_RECORDS:
+            raise gl.vm.UserError(
+                "minimum_independent_corroborators exceeds bundle limit"
+            )
+
         if maximum_evidence_age <= 0:
             raise gl.vm.UserError("maximum_evidence_age must be positive")
 
@@ -662,6 +676,11 @@ class SourceQuorum(gl.Contract):
         if minimum_independent_corroborators <= 0:
             raise gl.vm.UserError(
                 "At least one independent corroborator is required"
+            )
+
+        if minimum_independent_corroborators >= MAX_BUNDLE_EVIDENCE_RECORDS:
+            raise gl.vm.UserError(
+                "minimum_independent_corroborators exceeds bundle limit"
             )
 
         if maximum_evidence_age <= 0:
@@ -928,6 +947,11 @@ class SourceQuorum(gl.Contract):
         if is_primary and bundle.primary_record_id != u256(0):
             raise gl.vm.UserError("Bundle already has a primary record")
 
+        if int(bundle.record_count) >= MAX_BUNDLE_EVIDENCE_RECORDS:
+            raise gl.vm.UserError(
+                "Bundle evidence record limit reached"
+            )
+
         record_id = self.next_record_id
         self.next_record_id = u256(int(self.next_record_id) + 1)
 
@@ -953,7 +977,13 @@ class SourceQuorum(gl.Contract):
 
         self.bundle_authority_used[bundle_authority_key] = True
 
-        bundle.record_count = u256(int(bundle.record_count) + 1)
+        record_index = u256(int(bundle.record_count) + 1)
+
+        self.bundle_record_ids[
+            f"{bundle_key}|{record_index}"
+        ] = record_id
+
+        bundle.record_count = record_index
 
         if is_primary:
             bundle.primary_record_id = record_id
@@ -1800,3 +1830,45 @@ class SourceQuorum(gl.Contract):
         return self._require_review(
             rid
         ).reason_code
+
+
+    @gl.public.view
+    def get_bundle_record_id(
+        self,
+        bundle_id: int,
+        record_index: int,
+    ) -> int:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        bundle = self._require_bundle(bid)
+
+        if record_index <= 0:
+            raise gl.vm.UserError(
+                "record_index must be positive"
+            )
+
+        if record_index > int(bundle.record_count):
+            raise gl.vm.UserError(
+                "record_index exceeds bundle record count"
+            )
+
+        record_id = self.bundle_record_ids.get(
+            f"{self._bundle_key(bid)}|{record_index}",
+            u256(0),
+        )
+
+        if record_id == u256(0):
+            raise gl.vm.UserError(
+                "Bundle record index is inconsistent"
+            )
+
+        return int(record_id)
+
+    @gl.public.view
+    def get_max_bundle_evidence_records(
+        self,
+    ) -> int:
+        return MAX_BUNDLE_EVIDENCE_RECORDS
