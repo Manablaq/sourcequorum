@@ -149,3 +149,27 @@ evidence set reviewed by validators cannot change after bundle freeze.
 A policy whose minimum independent corroborator requirement cannot fit
 within the v1 bundle limit is rejected when the policy version is
 created.
+
+## Structured-review independence boundary
+
+The structured evidence layer verifies objective evidence properties but
+does not itself prove semantic or provenance independence.
+
+It may deterministically calculate a structural candidate count while
+evaluating whether the submitted bundle could potentially meet its
+policy quorum.
+
+That candidate count is not the final independent corroborator count.
+
+Until validator-backed semantic/provenance review establishes that the
+candidate authorities independently establish the fact rather than copy
+the same upstream source, a structured ReviewRecord must persist:
+
+- `independent_corroborator_count = 0`
+- empty final `qualifying_authority_set`
+- empty final `excluded_authority_set`
+
+The structured layer therefore cannot make a bundle `ADMISSIBLE`.
+
+This prevents structural diversity, separate domains, or separate
+authority IDs from being mistaken for genuinely independent evidence.

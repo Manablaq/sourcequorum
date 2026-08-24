@@ -2,6 +2,8 @@
 
 from genlayer import *
 from dataclasses import dataclass
+import hashlib
+import json
 from datetime import datetime, timezone
 
 
@@ -1872,3 +1874,835 @@ class SourceQuorum(gl.Contract):
         self,
     ) -> int:
         return MAX_BUNDLE_EVIDENCE_RECORDS
+
+
+    # ------------------------------------------------------------------
+    # Structured evidence consensus
+    # ------------------------------------------------------------------
+    #
+    # This is the first validator-backed ReviewRecord creation path.
+    #
+    # It verifies objective structured evidence facts:
+    #
+    # - HTTP availability
+    # - exact fetched bytes digest
+    # - exact version reference
+    # - verified publication timestamp
+    # - exact fact code
+    # - exact authority revision identity
+    #
+    # It does NOT yet establish semantic/provenance independence.
+    #
+    # Therefore even a structurally complete quorum fails closed as
+    # INADMISSIBLE / SEMANTIC_INDEPENDENCE_UNVERIFIED until the later
+    # semantic validator layer is added.
+    # ------------------------------------------------------------------
+
+    @gl.public.write
+    def review_frozen_bundle(
+        self,
+        bundle_id: int,
+    ) -> int:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        storage_bundle = self._require_bundle(bid)
+
+        if not storage_bundle.frozen:
+            raise gl.vm.UserError(
+                "Bundle must be frozen before review"
+            )
+
+        bundle_key = self._bundle_key(bid)
+
+        if self.bundle_superseded_by.get(
+            bundle_key,
+            u256(0),
+        ) != u256(0):
+            raise gl.vm.UserError(
+                "Superseded bundle cannot be reviewed"
+            )
+
+        storage_policy = self._require_policy(
+            storage_bundle.policy_id,
+            storage_bundle.policy_version,
+        )
+
+        if not storage_policy.sealed:
+            raise gl.vm.UserError(
+                "Policy version must be sealed"
+            )
+
+        if self.policy_activated_at.get(
+            self._policy_key(
+                storage_bundle.policy_id,
+                storage_bundle.policy_version,
+            ),
+            u256(0),
+        ) == u256(0):
+            raise gl.vm.UserError(
+                "Policy version is not active"
+            )
+
+        record_count = int(
+            storage_bundle.record_count
+        )
+
+        if record_count <= 0:
+            raise gl.vm.UserError(
+                "Bundle contains no evidence"
+            )
+
+        if record_count > MAX_BUNDLE_EVIDENCE_RECORDS:
+            raise gl.vm.UserError(
+                "Bundle evidence record count exceeds protocol limit"
+            )
+
+        # Deterministic transaction time captured once.
+        reviewed_at = self._now()
+
+        # --------------------------------------------------------
+        # Copy every storage-backed object needed by nondeterminism.
+        # --------------------------------------------------------
+
+        bundle_memory = gl.storage.copy_to_memory(
+            storage_bundle
+        )
+
+        policy_memory = gl.storage.copy_to_memory(
+            storage_policy
+        )
+
+        records_memory = []
+        authorities_memory = []
+
+        primary_count = 0
+
+        for index in range(
+            1,
+            record_count + 1,
+        ):
+            record_id = self.bundle_record_ids.get(
+                f"{bundle_key}|{index}",
+                u256(0),
+            )
+
+            if record_id == u256(0):
+                raise gl.vm.UserError(
+                    "Bundle record index is inconsistent"
+                )
+
+            record_key = self._record_key(
+                record_id
+            )
+
+            if not self.record_exists.get(
+                record_key,
+                False,
+            ):
+                raise gl.vm.UserError(
+                    "Indexed evidence record does not exist"
+                )
+
+            storage_record = self.records[
+                record_key
+            ]
+
+            if storage_record.bundle_id != bid:
+                raise gl.vm.UserError(
+                    "Indexed evidence record belongs to another bundle"
+                )
+
+            storage_authority = self._require_authority(
+                storage_record.authority_id,
+                storage_record.authority_revision,
+            )
+
+            if not storage_authority.sealed:
+                raise gl.vm.UserError(
+                    "Evidence authority revision is not sealed"
+                )
+
+            if not self._authority_is_currently_valid(
+                storage_authority
+            ):
+                raise gl.vm.UserError(
+                    "Evidence authority revision is not currently valid"
+                )
+
+            if storage_record.is_primary:
+                primary_count += 1
+
+            records_memory.append(
+                gl.storage.copy_to_memory(
+                    storage_record
+                )
+            )
+
+            authorities_memory.append(
+                gl.storage.copy_to_memory(
+                    storage_authority
+                )
+            )
+
+        if primary_count != 1:
+            raise gl.vm.UserError(
+                "Bundle must contain exactly one primary record"
+            )
+
+        if (
+            int(bundle_memory.primary_record_id)
+            <= 0
+        ):
+            raise gl.vm.UserError(
+                "Bundle primary record is missing"
+            )
+
+        # --------------------------------------------------------
+        # Independent evidence observation.
+        # --------------------------------------------------------
+
+        def observe_evidence():
+            observations = []
+
+            for index in range(
+                0,
+                record_count,
+            ):
+                record = records_memory[index]
+                authority = authorities_memory[index]
+
+                response = gl.nondet.web.get(
+                    record.retrieval_location
+                )
+
+                status_code = int(
+                    response.status
+                )
+
+                base = {
+                    "record_id": int(
+                        record.record_id
+                    ),
+                    "authority_id": int(
+                        authority.authority_id
+                    ),
+                    "authority_revision": int(
+                        authority.revision
+                    ),
+                    "independence_group":
+                        authority.independence_group,
+                    "is_primary":
+                        record.is_primary,
+                    "fetch_code": "",
+                    "version_reference": "",
+                    "published_at": 0,
+                    "fact_code": "",
+                    "body_digest": "",
+                }
+
+                if status_code >= 500:
+                    base["fetch_code"] = (
+                        "UNAVAILABLE"
+                    )
+                    observations.append(base)
+                    continue
+
+                if (
+                    status_code < 200
+                    or status_code >= 300
+                ):
+                    base["fetch_code"] = (
+                        "INVALID_HTTP"
+                    )
+                    observations.append(base)
+                    continue
+
+                body = response.body
+
+                if body is None:
+                    base["fetch_code"] = (
+                        "INVALID_SCHEMA"
+                    )
+                    observations.append(base)
+                    continue
+
+                base["body_digest"] = (
+                    "sha256:"
+                    + hashlib.sha256(
+                        body
+                    ).hexdigest()
+                )
+
+                try:
+                    decoded = body.decode(
+                        "utf-8"
+                    )
+                    data = json.loads(
+                        decoded
+                    )
+                except Exception:
+                    base["fetch_code"] = (
+                        "INVALID_JSON"
+                    )
+                    observations.append(base)
+                    continue
+
+                if not isinstance(
+                    data,
+                    dict,
+                ):
+                    base["fetch_code"] = (
+                        "INVALID_SCHEMA"
+                    )
+                    observations.append(base)
+                    continue
+
+                version = data.get(
+                    "version_reference"
+                )
+                published_at = data.get(
+                    "published_at"
+                )
+                fact_code = data.get(
+                    "fact_code"
+                )
+
+                valid_published_at = (
+                    isinstance(
+                        published_at,
+                        int,
+                    )
+                    and not isinstance(
+                        published_at,
+                        bool,
+                    )
+                    and published_at > 0
+                )
+
+                if (
+                    not isinstance(
+                        version,
+                        str,
+                    )
+                    or not version.strip()
+                    or not valid_published_at
+                    or not isinstance(
+                        fact_code,
+                        str,
+                    )
+                    or not fact_code.strip()
+                ):
+                    base["fetch_code"] = (
+                        "INVALID_SCHEMA"
+                    )
+                    observations.append(base)
+                    continue
+
+                base["fetch_code"] = "OK"
+                base["version_reference"] = (
+                    version.strip()
+                )
+                base["published_at"] = (
+                    published_at
+                )
+                base["fact_code"] = (
+                    fact_code.strip()
+                )
+
+                observations.append(base)
+
+            return {
+                "records": observations,
+            }
+
+        def validator_fn(
+            leaders_res,
+        ) -> bool:
+            if not isinstance(
+                leaders_res,
+                gl.vm.Return,
+            ):
+                return False
+
+            try:
+                validator_result = (
+                    observe_evidence()
+                )
+            except Exception:
+                return False
+
+            # Exact equality is intentional.
+            #
+            # Every field here can affect the deterministic
+            # post-consensus review result.
+            return (
+                validator_result
+                == leaders_res.calldata
+            )
+
+        consensus_result = (
+            gl.vm.run_nondet_unsafe(
+                observe_evidence,
+                validator_fn,
+            )
+        )
+
+        observations = consensus_result[
+            "records"
+        ]
+
+        if len(observations) != record_count:
+            raise gl.vm.UserError(
+                "Consensus result record count mismatch"
+            )
+
+        # --------------------------------------------------------
+        # Deterministic post-consensus derivation.
+        # --------------------------------------------------------
+
+        primary_observation = None
+        primary_record_memory = None
+
+        unavailable = False
+        invalid_response = False
+        integrity_failure = False
+
+        for index in range(
+            0,
+            record_count,
+        ):
+            observation = observations[
+                index
+            ]
+            record = records_memory[
+                index
+            ]
+
+            if (
+                observation["record_id"]
+                != int(record.record_id)
+                or observation[
+                    "authority_id"
+                ]
+                != int(record.authority_id)
+                or observation[
+                    "authority_revision"
+                ]
+                != int(
+                    record.authority_revision
+                )
+                or observation[
+                    "is_primary"
+                ]
+                != record.is_primary
+            ):
+                raise gl.vm.UserError(
+                    "Consensus evidence identity mismatch"
+                )
+
+            fetch_code = observation[
+                "fetch_code"
+            ]
+
+            if fetch_code == "UNAVAILABLE":
+                unavailable = True
+            elif fetch_code != "OK":
+                invalid_response = True
+
+            if fetch_code == "OK":
+                if (
+                    observation[
+                        "body_digest"
+                    ]
+                    != record.submitted_digest
+                ):
+                    integrity_failure = True
+
+                if (
+                    observation[
+                        "version_reference"
+                    ]
+                    != record.version_reference
+                ):
+                    integrity_failure = True
+
+            if record.is_primary:
+                primary_observation = (
+                    observation
+                )
+                primary_record_memory = (
+                    record
+                )
+
+        if (
+            primary_observation is None
+            or primary_record_memory is None
+        ):
+            raise gl.vm.UserError(
+                "Primary consensus observation missing"
+            )
+
+        primary_fact = primary_observation[
+            "fact_code"
+        ]
+
+        primary_published_at = (
+            primary_observation[
+                "published_at"
+            ]
+        )
+
+        qualifying = []
+        excluded = []
+        qualifying_groups = []
+
+        conflict_detected = False
+
+        maximum_age = int(
+            policy_memory.maximum_evidence_age
+        )
+
+        reviewed_at_int = int(
+            reviewed_at
+        )
+
+        primary_stale = False
+
+        if (
+            primary_observation[
+                "fetch_code"
+            ]
+            == "OK"
+            and primary_published_at > 0
+        ):
+            primary_stale = (
+                primary_published_at
+                > reviewed_at_int
+                or (
+                    reviewed_at_int
+                    - primary_published_at
+                    > maximum_age
+                )
+            )
+
+        for index in range(
+            0,
+            record_count,
+        ):
+            record = records_memory[
+                index
+            ]
+            authority = authorities_memory[
+                index
+            ]
+            observation = observations[
+                index
+            ]
+
+            if record.is_primary:
+                continue
+
+            authority_identity = (
+                str(
+                    int(
+                        authority.authority_id
+                    )
+                )
+                + ":"
+                + str(
+                    int(
+                        authority.revision
+                    )
+                )
+            )
+
+            qualifies = True
+
+            if (
+                observation["fetch_code"]
+                != "OK"
+            ):
+                qualifies = False
+
+            if (
+                observation[
+                    "body_digest"
+                ]
+                != record.submitted_digest
+            ):
+                qualifies = False
+
+            if (
+                observation[
+                    "version_reference"
+                ]
+                != record.version_reference
+            ):
+                qualifies = False
+
+            published_at = observation[
+                "published_at"
+            ]
+
+            stale = (
+                published_at <= 0
+                or published_at
+                > reviewed_at_int
+                or (
+                    reviewed_at_int
+                    - published_at
+                    > maximum_age
+                )
+            )
+
+            if stale:
+                qualifies = False
+
+            if (
+                observation["fetch_code"]
+                == "OK"
+                and not stale
+                and observation[
+                    "fact_code"
+                ]
+                != primary_fact
+            ):
+                conflict_detected = True
+                qualifies = False
+
+            if (
+                observation["fact_code"]
+                != primary_fact
+            ):
+                qualifies = False
+
+            if qualifies:
+                qualifying.append(
+                    (
+                        int(
+                            authority.authority_id
+                        ),
+                        int(
+                            authority.revision
+                        ),
+                        authority_identity,
+                    )
+                )
+
+                if (
+                    authority.independence_group
+                    not in qualifying_groups
+                ):
+                    qualifying_groups.append(
+                        authority.independence_group
+                    )
+            else:
+                excluded.append(
+                    (
+                        int(
+                            authority.authority_id
+                        ),
+                        int(
+                            authority.revision
+                        ),
+                        authority_identity,
+                    )
+                )
+
+        qualifying.sort()
+        excluded.sort()
+
+        qualifying_authority_set = "|".join(
+            item[2]
+            for item in qualifying
+        )
+
+        excluded_authority_set = "|".join(
+            item[2]
+            for item in excluded
+        )
+
+        # This is only a structural candidate count.
+        #
+        # It MUST NOT be persisted as verified independence because
+        # this review layer has not yet established semantic/provenance
+        # independence between corroborating sources.
+        structural_candidate_count = len(
+            qualifying_groups
+        )
+
+        # Exact canonical evidence record.
+        evidence_facts_canonical = (
+            json.dumps(
+                observations,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+
+        # --------------------------------------------------------
+        # Fail-closed status precedence.
+        # --------------------------------------------------------
+
+        status = REVIEW_INADMISSIBLE
+        reason_code = ""
+
+        if unavailable:
+            status = REVIEW_UNAVAILABLE
+            reason_code = (
+                "EVIDENCE_UNAVAILABLE"
+            )
+
+        elif invalid_response:
+            status = REVIEW_INADMISSIBLE
+            reason_code = (
+                "INVALID_EVIDENCE_RESPONSE"
+            )
+
+        elif integrity_failure:
+            status = REVIEW_INADMISSIBLE
+            reason_code = (
+                "EVIDENCE_INTEGRITY_MISMATCH"
+            )
+
+        elif primary_stale:
+            status = REVIEW_STALE
+            reason_code = (
+                "PRIMARY_EVIDENCE_STALE"
+            )
+
+        elif conflict_detected:
+            status = REVIEW_CONFLICTED
+            reason_code = (
+                "MATERIAL_FACT_CONFLICT"
+            )
+
+        elif (
+            structural_candidate_count
+            < int(
+                policy_memory.
+                minimum_independent_corroborators
+            )
+        ):
+            status = (
+                REVIEW_INSUFFICIENT_CORROBORATION
+            )
+            reason_code = (
+                "INSUFFICIENT_FRESH_CORROBORATION"
+            )
+
+        else:
+            # SECURITY:
+            #
+            # Structural independence is not enough.
+            # The next consensus layer must establish that
+            # corroborators independently establish the fact rather
+            # than merely copying the same upstream source.
+            status = REVIEW_INADMISSIBLE
+            reason_code = (
+                "SEMANTIC_INDEPENDENCE_UNVERIFIED"
+            )
+
+        # --------------------------------------------------------
+        # Append exactly one immutable review AFTER consensus.
+        # --------------------------------------------------------
+
+        current_count = (
+            self.bundle_review_count.get(
+                bundle_key,
+                u256(0),
+            )
+        )
+
+        previous_review_id = (
+            self.bundle_latest_review_id.get(
+                bundle_key,
+                u256(0),
+            )
+        )
+
+        review_id = self.next_review_id
+
+        attempt_number = u256(
+            int(current_count) + 1
+        )
+
+        review = ReviewRecord(
+            review_id=review_id,
+            bundle_id=bid,
+            attempt_number=attempt_number,
+            previous_review_id=(
+                previous_review_id
+            ),
+            review_kind=(
+                REVIEW_KIND_EVIDENCE
+            ),
+            challenge_request_id=u256(0),
+            policy_id=(
+                bundle_memory.policy_id
+            ),
+            policy_version=(
+                bundle_memory.policy_version
+            ),
+            reviewed_at=reviewed_at,
+            status=status,
+            fact_code=primary_fact,
+            primary_record_id=(
+                bundle_memory.primary_record_id
+            ),
+            verified_primary_version=(
+                primary_observation[
+                    "version_reference"
+                ]
+            ),
+            verified_primary_published_at=u256(
+                primary_published_at
+            ),
+            # SECURITY:
+            #
+            # The structured layer can establish candidate authorities
+            # but cannot establish semantic/provenance independence.
+            #
+            # Final qualifying/excluded authority sets and the verified
+            # independent count therefore remain fail-closed until the
+            # semantic review layer reaches validator consensus.
+            qualifying_authority_set="",
+            excluded_authority_set="",
+            evidence_facts_canonical=(
+                evidence_facts_canonical
+            ),
+            independent_corroborator_count=u256(0),
+            conflict_detected=(
+                conflict_detected
+            ),
+            reason_code=reason_code,
+        )
+
+        review_key = self._review_key(
+            review_id
+        )
+
+        self.reviews[
+            review_key
+        ] = review
+
+        self.review_exists[
+            review_key
+        ] = True
+
+        self.bundle_review_count[
+            bundle_key
+        ] = attempt_number
+
+        self.bundle_latest_review_id[
+            bundle_key
+        ] = review_id
+
+        self.next_review_id = u256(
+            int(self.next_review_id) + 1
+        )
+
+        return int(review_id)
