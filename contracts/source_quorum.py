@@ -8,6 +8,16 @@ from datetime import datetime, timezone
 ROLE_PRIMARY = "primary"
 ROLE_CORROBORATOR = "corroborator"
 
+REVIEW_KIND_EVIDENCE = "evidence"
+REVIEW_KIND_CHALLENGE = "challenge"
+
+REVIEW_ADMISSIBLE = "ADMISSIBLE"
+REVIEW_INADMISSIBLE = "INADMISSIBLE"
+REVIEW_STALE = "STALE"
+REVIEW_CONFLICTED = "CONFLICTED"
+REVIEW_INSUFFICIENT_CORROBORATION = "INSUFFICIENT_CORROBORATION"
+REVIEW_UNAVAILABLE = "UNAVAILABLE"
+
 
 @allow_storage
 @dataclass
@@ -80,6 +90,38 @@ class ChallengeRequest:
     expired: bool
 
 
+
+@allow_storage
+@dataclass
+class ReviewRecord:
+    review_id: u256
+    bundle_id: u256
+    attempt_number: u256
+    previous_review_id: u256
+
+    review_kind: str
+    challenge_request_id: u256
+
+    policy_id: u256
+    policy_version: u256
+
+    reviewed_at: u256
+    status: str
+    fact_code: str
+
+    primary_record_id: u256
+    verified_primary_version: str
+    verified_primary_published_at: u256
+
+    qualifying_authority_set: str
+    excluded_authority_set: str
+    evidence_facts_canonical: str
+
+    independent_corroborator_count: u256
+    conflict_detected: bool
+    reason_code: str
+
+
 class SourceQuorum(gl.Contract):
     owner: Address
     challenge_window_seconds: u256
@@ -89,6 +131,7 @@ class SourceQuorum(gl.Contract):
     next_bundle_id: u256
     next_record_id: u256
     next_challenge_id: u256
+    next_review_id: u256
 
     authority_exists: TreeMap[str, bool]
     authority_latest_revision: TreeMap[str, u256]
@@ -124,6 +167,13 @@ class SourceQuorum(gl.Contract):
     bundle_pending_challenge_id: TreeMap[str, u256]
     bundle_open_challenge_id: TreeMap[str, u256]
 
+    # Append-only review ledger.
+    review_exists: TreeMap[str, bool]
+    reviews: TreeMap[str, ReviewRecord]
+
+    bundle_review_count: TreeMap[str, u256]
+    bundle_latest_review_id: TreeMap[str, u256]
+
     def __init__(self, challenge_window_seconds: int):
         if challenge_window_seconds <= 0:
             raise gl.vm.UserError("Challenge window must be positive")
@@ -136,6 +186,7 @@ class SourceQuorum(gl.Contract):
         self.next_bundle_id = u256(1)
         self.next_record_id = u256(1)
         self.next_challenge_id = u256(1)
+        self.next_review_id = u256(1)
 
     # ------------------------------------------------------------------
     # Internal deterministic helpers
@@ -1425,3 +1476,327 @@ class SourceQuorum(gl.Contract):
     ) -> bool:
         cid = self._id(challenge_id, "challenge_id")
         return self._require_challenge(cid).expired
+
+
+    # ------------------------------------------------------------------
+    # Append-only review ledger
+    # ------------------------------------------------------------------
+    #
+    # No public method creates or modifies ReviewRecord yet.
+    #
+    # Future validator-backed adjudication is the only intended writer.
+    # ------------------------------------------------------------------
+
+    def _review_key(
+        self,
+        review_id: u256,
+    ) -> str:
+        return str(int(review_id))
+
+    def _require_review(
+        self,
+        review_id: u256,
+    ) -> ReviewRecord:
+        key = self._review_key(review_id)
+
+        if not self.review_exists.get(
+            key,
+            False,
+        ):
+            raise gl.vm.UserError(
+                "Review does not exist"
+            )
+
+        return self.reviews[key]
+
+    @gl.public.view
+    def get_bundle_review_count(
+        self,
+        bundle_id: int,
+    ) -> int:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        self._require_bundle(bid)
+
+        return int(
+            self.bundle_review_count.get(
+                self._bundle_key(bid),
+                u256(0),
+            )
+        )
+
+    @gl.public.view
+    def get_latest_review_id(
+        self,
+        bundle_id: int,
+    ) -> int:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        self._require_bundle(bid)
+
+        return int(
+            self.bundle_latest_review_id.get(
+                self._bundle_key(bid),
+                u256(0),
+            )
+        )
+
+    @gl.public.view
+    def get_review_bundle_id(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).bundle_id
+        )
+
+    @gl.public.view
+    def get_review_attempt_number(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).attempt_number
+        )
+
+    @gl.public.view
+    def get_review_previous_id(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).previous_review_id
+        )
+
+    @gl.public.view
+    def get_review_kind(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).review_kind
+
+    @gl.public.view
+    def get_review_challenge_request_id(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).challenge_request_id
+        )
+
+    @gl.public.view
+    def get_review_policy_id(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).policy_id
+        )
+
+    @gl.public.view
+    def get_review_policy_version(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).policy_version
+        )
+
+    @gl.public.view
+    def get_review_status(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).status
+
+    @gl.public.view
+    def get_review_fact_code(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).fact_code
+
+    @gl.public.view
+    def get_review_verified_primary_version(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).verified_primary_version
+
+    @gl.public.view
+    def get_review_verified_primary_published_at(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).verified_primary_published_at
+        )
+
+    @gl.public.view
+    def get_review_qualifying_authority_set(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).qualifying_authority_set
+
+    @gl.public.view
+    def get_review_excluded_authority_set(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).excluded_authority_set
+
+    @gl.public.view
+    def get_review_evidence_facts_canonical(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).evidence_facts_canonical
+
+    @gl.public.view
+    def get_review_independent_corroborator_count(
+        self,
+        review_id: int,
+    ) -> int:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return int(
+            self._require_review(
+                rid
+            ).independent_corroborator_count
+        )
+
+    @gl.public.view
+    def get_review_conflict_detected(
+        self,
+        review_id: int,
+    ) -> bool:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).conflict_detected
+
+    @gl.public.view
+    def get_review_reason_code(
+        self,
+        review_id: int,
+    ) -> str:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        return self._require_review(
+            rid
+        ).reason_code
