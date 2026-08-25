@@ -66,6 +66,16 @@ def open_material_challenge(
 
     direct_vm.clear_mocks()
 
+    # Direct Mode contract time and host wall-clock time
+    # are different clock domains. Resolution evidence must
+    # use the same clock domain that the contract uses for its
+    # freshness/future-date checks.
+    scenario[
+        "_resolution_published_at"
+    ] = int(
+        contract._now()
+    )
+
     return (
         scenario,
         admissible,
@@ -99,8 +109,19 @@ def resolution_payload(
     overrides=None,
 ):
     if published_at is None:
+        if (
+            "_resolution_published_at"
+            not in scenario
+        ):
+            raise AssertionError(
+                "resolution fixture missing "
+                "contract-clock timestamp"
+            )
+
         published_at = int(
-            time.time()
+            scenario[
+                "_resolution_published_at"
+            ]
         )
 
     data = {
@@ -800,6 +821,7 @@ def test_non_open_challenge_cannot_use_resolution_path(
         challenge_id,
         admissible,
         challenged_payload,
+        published_at=int(contract._now()),
     )
 
     with direct_vm.expect_revert(
