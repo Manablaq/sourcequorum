@@ -950,7 +950,7 @@ def test_open_challenge_cannot_be_expired_as_pending_request(
     )
 
 
-def test_open_challenge_writer_is_materiality_only():
+def test_open_challenge_writers_are_protocol_only():
     source = Path(
         "contracts/source_quorum.py"
     ).read_text()
@@ -1024,7 +1024,8 @@ def test_open_challenge_writer_is_materiality_only():
                     )
 
     assert writers == [
-        "review_challenge_materiality"
+        "review_challenge_materiality",
+        "review_open_challenge_resolution",
     ]
 
 

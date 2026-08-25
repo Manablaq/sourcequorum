@@ -4639,8 +4639,8 @@ class SourceQuorum(gl.Contract):
             # ----------------------------------------------------
             # Semantic materiality.
             #
-            # Both the evidence content and the submitter's reason
-            # are untrusted data. They may never instruct the model.
+            # The evidence content is untrusted data.
+            # It may never instruct the model.
             # ----------------------------------------------------
 
             prompt = (
@@ -5071,6 +5071,984 @@ class SourceQuorum(gl.Contract):
             self.bundle_open_challenge_id[
                 bundle_key
             ] = cid
+
+        return int(
+            review_id
+        )
+
+
+    # ------------------------------------------------------------------
+    # Fresh validator-backed open-challenge resolution
+    # ------------------------------------------------------------------
+    #
+    # An open material challenge fails closed until either:
+    #
+    # 1. the exact challenge authority publishes a fresh, versioned
+    #    structured RETRACT record that explicitly supersedes the
+    #    challenged evidence, or
+    #
+    # 2. the bundle submitter creates a fresh superseding bundle.
+    #
+    # There is no owner/admin challenge-clear path.
+    #
+    # Resolution does not use an LLM. Leader and validator independently
+    # fetch and verify the exact structured authority record and must agree
+    # byte-for-byte on every consequential observation.
+    # ------------------------------------------------------------------
+
+    @gl.public.write
+    def review_open_challenge_resolution(
+        self,
+        challenge_id: int,
+        resolution_reference: str,
+        version_reference: str,
+        evidence_digest: str,
+    ) -> int:
+        cid = self._id(
+            challenge_id,
+            "challenge_id",
+        )
+
+        storage_challenge = (
+            self._require_challenge(
+                cid
+            )
+        )
+
+        bid = storage_challenge.bundle_id
+        bundle_key = self._bundle_key(
+            bid
+        )
+
+        if storage_challenge.expired:
+            raise gl.vm.UserError(
+                "Expired request cannot be an open challenge"
+            )
+
+        if self.bundle_open_challenge_id.get(
+            bundle_key,
+            u256(0),
+        ) != cid:
+            raise gl.vm.UserError(
+                "Challenge is not the bundle open challenge"
+            )
+
+        if self.bundle_pending_challenge_id.get(
+            bundle_key,
+            u256(0),
+        ) != u256(0):
+            raise gl.vm.UserError(
+                "Open challenge state is inconsistent with pending request"
+            )
+
+        target_review_id = (
+            storage_challenge.target_review_id
+        )
+
+        if target_review_id == u256(0):
+            raise gl.vm.UserError(
+                "Open challenge has no evidence review target"
+            )
+
+        if (
+            self.bundle_latest_evidence_review_id.get(
+                bundle_key,
+                u256(0),
+            )
+            != target_review_id
+        ):
+            raise gl.vm.UserError(
+                "Open challenge target is not latest evidence review"
+            )
+
+        storage_target = self._require_review(
+            target_review_id
+        )
+
+        if (
+            storage_target.bundle_id
+            != bid
+            or storage_target.review_kind
+            != REVIEW_KIND_EVIDENCE
+        ):
+            raise gl.vm.UserError(
+                "Open challenge target binding is invalid"
+            )
+
+        storage_bundle = self._require_bundle(
+            bid
+        )
+
+        if not storage_bundle.frozen:
+            raise gl.vm.UserError(
+                "Open challenge bundle must remain frozen"
+            )
+
+        if (
+            storage_target.policy_id
+            != storage_bundle.policy_id
+            or storage_target.policy_version
+            != storage_bundle.policy_version
+        ):
+            raise gl.vm.UserError(
+                "Open challenge policy binding mismatch"
+            )
+
+        storage_policy = self._require_policy(
+            storage_bundle.policy_id,
+            storage_bundle.policy_version,
+        )
+
+        if not storage_policy.sealed:
+            raise gl.vm.UserError(
+                "Bundle policy version must remain sealed"
+            )
+
+        policy_key = self._policy_key(
+            storage_bundle.policy_id,
+            storage_bundle.policy_version,
+        )
+
+        if self.policy_activated_at.get(
+            policy_key,
+            u256(0),
+        ) == u256(0):
+            raise gl.vm.UserError(
+                "Bundle policy version is not active"
+            )
+
+        storage_authority = (
+            self._require_authority(
+                storage_challenge.authority_id,
+                storage_challenge.authority_revision,
+            )
+        )
+
+        if not storage_authority.sealed:
+            raise gl.vm.UserError(
+                "Challenge authority revision must remain sealed"
+            )
+
+        if not self._authority_is_currently_valid(
+            storage_authority
+        ):
+            raise gl.vm.UserError(
+                "Challenge authority revision is no longer valid"
+            )
+
+        authority_key = self._authority_key(
+            storage_challenge.authority_id,
+            storage_challenge.authority_revision,
+        )
+
+        primary_membership = (
+            self.policy_authority_membership.get(
+                self._policy_authority_key(
+                    policy_key,
+                    ROLE_PRIMARY,
+                    authority_key,
+                ),
+                False,
+            )
+        )
+
+        corroborator_membership = (
+            self.policy_authority_membership.get(
+                self._policy_authority_key(
+                    policy_key,
+                    ROLE_CORROBORATOR,
+                    authority_key,
+                ),
+                False,
+            )
+        )
+
+        if not (
+            primary_membership
+            or corroborator_membership
+        ):
+            raise gl.vm.UserError(
+                "Challenge authority is no longer approved by bundle policy"
+            )
+
+        normalized_reference = (
+            resolution_reference.strip()
+        )
+
+        normalized_version = (
+            version_reference.strip()
+        )
+
+        normalized_digest = (
+            evidence_digest.strip().lower()
+        )
+
+        if (
+            not normalized_reference
+            or not normalized_reference.startswith(
+                "https://"
+            )
+        ):
+            raise gl.vm.UserError(
+                "Resolution reference must use https://"
+            )
+
+        origin_count = int(
+            self.authority_origin_count.get(
+                authority_key,
+                u256(0),
+            )
+        )
+
+        location_is_approved = False
+
+        for index in range(
+            1,
+            origin_count + 1,
+        ):
+            origin = self.authority_origins.get(
+                f"{authority_key}|{index}",
+                "",
+            )
+
+            if (
+                origin
+                and self._location_matches_origin(
+                    normalized_reference,
+                    origin,
+                )
+            ):
+                location_is_approved = True
+                break
+
+        if not location_is_approved:
+            raise gl.vm.UserError(
+                "Resolution reference is not under challenge authority origin"
+            )
+
+        if not normalized_version:
+            raise gl.vm.UserError(
+                "Resolution requires version reference"
+            )
+
+        if (
+            not normalized_digest.startswith(
+                "sha256:"
+            )
+            or len(normalized_digest) != 71
+            or any(
+                char not in "0123456789abcdef"
+                for char
+                in normalized_digest[7:]
+            )
+        ):
+            raise gl.vm.UserError(
+                "Resolution evidence digest must be sha256"
+            )
+
+        # A resolution must be a genuinely new immutable record.
+        if (
+            normalized_version
+            == storage_challenge.version_reference
+        ):
+            raise gl.vm.UserError(
+                "Resolution version must differ from challenged version"
+            )
+
+        if (
+            normalized_digest
+            == storage_challenge.evidence_digest
+        ):
+            raise gl.vm.UserError(
+                "Resolution digest must differ from challenged digest"
+            )
+
+        reviewed_at = self._now()
+
+        challenge_memory = (
+            gl.storage.copy_to_memory(
+                storage_challenge
+            )
+        )
+
+        target_memory = (
+            gl.storage.copy_to_memory(
+                storage_target
+            )
+        )
+
+        bundle_memory = (
+            gl.storage.copy_to_memory(
+                storage_bundle
+            )
+        )
+
+        policy_memory = (
+            gl.storage.copy_to_memory(
+                storage_policy
+            )
+        )
+
+        authority_memory = (
+            gl.storage.copy_to_memory(
+                storage_authority
+            )
+        )
+
+        reviewed_at_int = int(
+            reviewed_at
+        )
+
+        maximum_age = int(
+            policy_memory.maximum_evidence_age
+        )
+
+        # Plain calldata values are copied into local memory before
+        # nondeterminism and never changed inside the nondeterministic call.
+        resolution_reference_memory = (
+            normalized_reference
+        )
+
+        resolution_version_memory = (
+            normalized_version
+        )
+
+        resolution_digest_memory = (
+            normalized_digest
+        )
+
+        def observe_resolution():
+            response = gl.nondet.web.get(
+                resolution_reference_memory
+            )
+
+            status_code = int(
+                response.status
+            )
+
+            result = {
+                "review_code": "",
+                "challenge_request_id":
+                    int(challenge_memory.challenge_id),
+                "target_review_id":
+                    int(challenge_memory.target_review_id),
+                "authority_id":
+                    int(challenge_memory.authority_id),
+                "authority_revision":
+                    int(challenge_memory.authority_revision),
+                "body_digest": "",
+                "version_reference": "",
+                "published_at": 0,
+                "target_fact_code": "",
+                "resolution_action": "",
+                "supersedes_version_reference": "",
+                "supersedes_digest": "",
+            }
+
+            if status_code >= 500:
+                result[
+                    "review_code"
+                ] = "UNAVAILABLE"
+
+                return result
+
+            if (
+                status_code < 200
+                or status_code >= 300
+                or response.body is None
+            ):
+                result[
+                    "review_code"
+                ] = "INVALID_RECORD"
+
+                return result
+
+            body_bytes = response.body
+
+            body_digest = (
+                "sha256:"
+                + hashlib.sha256(
+                    body_bytes
+                ).hexdigest()
+            )
+
+            result[
+                "body_digest"
+            ] = body_digest
+
+            if (
+                body_digest
+                != resolution_digest_memory
+            ):
+                result[
+                    "review_code"
+                ] = "EVIDENCE_CHANGED"
+
+                return result
+
+            try:
+                decoded = body_bytes.decode(
+                    "utf-8"
+                )
+
+                data = json.loads(
+                    decoded
+                )
+            except Exception:
+                result[
+                    "review_code"
+                ] = "INVALID_RECORD"
+
+                return result
+
+            if not isinstance(
+                data,
+                dict,
+            ):
+                result[
+                    "review_code"
+                ] = "INVALID_RECORD"
+
+                return result
+
+            required_keys = {
+                "version_reference",
+                "published_at",
+                "resolution_action",
+                "resolves_challenge_id",
+                "target_review_id",
+                "target_fact_code",
+                "authority_id",
+                "authority_revision",
+                "supersedes_version_reference",
+                "supersedes_digest",
+            }
+
+            if set(
+                data.keys()
+            ) != required_keys:
+                result[
+                    "review_code"
+                ] = "INVALID_RECORD"
+
+                return result
+
+            version = data.get(
+                "version_reference"
+            )
+
+            published_at = data.get(
+                "published_at"
+            )
+
+            action = data.get(
+                "resolution_action"
+            )
+
+            resolves_challenge_id = data.get(
+                "resolves_challenge_id"
+            )
+
+            record_target_review_id = data.get(
+                "target_review_id"
+            )
+
+            target_fact_code = data.get(
+                "target_fact_code"
+            )
+
+            record_authority_id = data.get(
+                "authority_id"
+            )
+
+            record_authority_revision = data.get(
+                "authority_revision"
+            )
+
+            supersedes_version = data.get(
+                "supersedes_version_reference"
+            )
+
+            supersedes_digest = data.get(
+                "supersedes_digest"
+            )
+
+            integer_fields_valid = (
+                isinstance(
+                    published_at,
+                    int,
+                )
+                and not isinstance(
+                    published_at,
+                    bool,
+                )
+                and published_at > 0
+                and isinstance(
+                    resolves_challenge_id,
+                    int,
+                )
+                and not isinstance(
+                    resolves_challenge_id,
+                    bool,
+                )
+                and resolves_challenge_id > 0
+                and isinstance(
+                    record_target_review_id,
+                    int,
+                )
+                and not isinstance(
+                    record_target_review_id,
+                    bool,
+                )
+                and record_target_review_id > 0
+                and isinstance(
+                    record_authority_id,
+                    int,
+                )
+                and not isinstance(
+                    record_authority_id,
+                    bool,
+                )
+                and record_authority_id > 0
+                and isinstance(
+                    record_authority_revision,
+                    int,
+                )
+                and not isinstance(
+                    record_authority_revision,
+                    bool,
+                )
+                and record_authority_revision > 0
+            )
+
+            string_fields_valid = (
+                isinstance(
+                    version,
+                    str,
+                )
+                and bool(
+                    version.strip()
+                )
+                and isinstance(
+                    target_fact_code,
+                    str,
+                )
+                and bool(
+                    target_fact_code.strip()
+                )
+                and isinstance(
+                    supersedes_version,
+                    str,
+                )
+                and bool(
+                    supersedes_version.strip()
+                )
+                and isinstance(
+                    supersedes_digest,
+                    str,
+                )
+                and bool(
+                    supersedes_digest.strip()
+                )
+            )
+
+            if (
+                not integer_fields_valid
+                or not string_fields_valid
+                or action not in (
+                    "RETRACT",
+                    "UPHOLD",
+                )
+            ):
+                result[
+                    "review_code"
+                ] = "INVALID_RECORD"
+
+                return result
+
+            version = version.strip()
+
+            target_fact_code = (
+                target_fact_code.strip()
+            )
+
+            supersedes_version = (
+                supersedes_version.strip()
+            )
+
+            supersedes_digest = (
+                supersedes_digest.strip().lower()
+            )
+
+            result[
+                "version_reference"
+            ] = version
+
+            result[
+                "published_at"
+            ] = published_at
+
+            result[
+                "target_fact_code"
+            ] = target_fact_code
+
+            result[
+                "resolution_action"
+            ] = action
+
+            result[
+                "supersedes_version_reference"
+            ] = supersedes_version
+
+            result[
+                "supersedes_digest"
+            ] = supersedes_digest
+
+            if (
+                version
+                != resolution_version_memory
+                or resolves_challenge_id
+                != int(
+                    challenge_memory.challenge_id
+                )
+                or record_target_review_id
+                != int(
+                    challenge_memory.target_review_id
+                )
+                or record_authority_id
+                != int(
+                    challenge_memory.authority_id
+                )
+                or record_authority_revision
+                != int(
+                    challenge_memory.authority_revision
+                )
+                or target_fact_code
+                != target_memory.fact_code
+                or supersedes_version
+                != challenge_memory.version_reference
+                or supersedes_digest
+                != challenge_memory.evidence_digest
+            ):
+                result[
+                    "review_code"
+                ] = "INVALID_BINDING"
+
+                return result
+
+            # Fresh resolution means the authority record was published
+            # no earlier than the challenge request itself.
+            if (
+                published_at
+                < int(
+                    challenge_memory.submitted_at
+                )
+                or published_at
+                > reviewed_at_int
+                or (
+                    reviewed_at_int
+                    - published_at
+                    > maximum_age
+                )
+            ):
+                result[
+                    "review_code"
+                ] = "STALE"
+
+                return result
+
+            result[
+                "review_code"
+            ] = "OK"
+
+            return result
+
+        def validator_fn(
+            leaders_res,
+        ) -> bool:
+            if not isinstance(
+                leaders_res,
+                gl.vm.Return,
+            ):
+                return False
+
+            try:
+                validator_result = (
+                    observe_resolution()
+                )
+            except Exception:
+                return False
+
+            # Exact equality is mandatory because RETRACT may clear
+            # consequential challenge state.
+            return (
+                validator_result
+                == leaders_res.calldata
+            )
+
+        resolution_result = (
+            gl.vm.run_nondet_unsafe(
+                observe_resolution,
+                validator_fn,
+            )
+        )
+
+        if (
+            resolution_result.get(
+                "challenge_request_id"
+            )
+            != int(cid)
+            or resolution_result.get(
+                "target_review_id"
+            )
+            != int(target_review_id)
+            or resolution_result.get(
+                "authority_id"
+            )
+            != int(
+                authority_memory.authority_id
+            )
+            or resolution_result.get(
+                "authority_revision"
+            )
+            != int(
+                authority_memory.revision
+            )
+        ):
+            raise gl.vm.UserError(
+                "Challenge resolution identity mismatch"
+            )
+
+        review_code = (
+            resolution_result.get(
+                "review_code"
+            )
+        )
+
+        status = REVIEW_INADMISSIBLE
+        reason_code = ""
+        conflict_detected = True
+        clear_open_challenge = False
+
+        if review_code == "UNAVAILABLE":
+            status = REVIEW_UNAVAILABLE
+            reason_code = (
+                "CHALLENGE_RESOLUTION_UNAVAILABLE"
+            )
+
+        elif review_code == "EVIDENCE_CHANGED":
+            status = REVIEW_INADMISSIBLE
+            reason_code = (
+                "CHALLENGE_RESOLUTION_EVIDENCE_CHANGED"
+            )
+
+        elif review_code == "INVALID_RECORD":
+            status = REVIEW_INADMISSIBLE
+            reason_code = (
+                "CHALLENGE_RESOLUTION_INVALID_RECORD"
+            )
+
+        elif review_code == "INVALID_BINDING":
+            status = REVIEW_INADMISSIBLE
+            reason_code = (
+                "CHALLENGE_RESOLUTION_INVALID_BINDING"
+            )
+
+        elif review_code == "STALE":
+            status = REVIEW_STALE
+            reason_code = (
+                "CHALLENGE_RESOLUTION_STALE"
+            )
+
+        elif review_code == "OK":
+            action = resolution_result.get(
+                "resolution_action"
+            )
+
+            if action == "RETRACT":
+                status = REVIEW_INADMISSIBLE
+                reason_code = (
+                    "CHALLENGE_RETRACTED_BY_AUTHORITY"
+                )
+
+                conflict_detected = False
+                clear_open_challenge = True
+
+            elif action == "UPHOLD":
+                status = REVIEW_CONFLICTED
+                reason_code = (
+                    "CHALLENGE_REAFFIRMED_BY_AUTHORITY"
+                )
+
+                conflict_detected = True
+
+            else:
+                raise gl.vm.UserError(
+                    "Challenge resolution action is invalid"
+                )
+
+        else:
+            raise gl.vm.UserError(
+                "Challenge resolution review code is invalid"
+            )
+
+        canonical_result = json.dumps(
+            {
+                "challenge_request_id":
+                    int(cid),
+                "target_review_id":
+                    int(target_review_id),
+                "authority_id":
+                    int(
+                        authority_memory.authority_id
+                    ),
+                "authority_revision":
+                    int(
+                        authority_memory.revision
+                    ),
+                "resolution_reference":
+                    resolution_reference_memory,
+                "body_digest":
+                    resolution_result.get(
+                        "body_digest",
+                        "",
+                    ),
+                "version_reference":
+                    resolution_result.get(
+                        "version_reference",
+                        "",
+                    ),
+                "published_at":
+                    resolution_result.get(
+                        "published_at",
+                        0,
+                    ),
+                "target_fact_code":
+                    resolution_result.get(
+                        "target_fact_code",
+                        "",
+                    ),
+                "resolution_action":
+                    resolution_result.get(
+                        "resolution_action",
+                        "",
+                    ),
+                "supersedes_version_reference":
+                    resolution_result.get(
+                        "supersedes_version_reference",
+                        "",
+                    ),
+                "supersedes_digest":
+                    resolution_result.get(
+                        "supersedes_digest",
+                        "",
+                    ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        current_count = (
+            self.bundle_review_count.get(
+                bundle_key,
+                u256(0),
+            )
+        )
+
+        previous_review_id = (
+            self.bundle_latest_review_id.get(
+                bundle_key,
+                u256(0),
+            )
+        )
+
+        review_id = self.next_review_id
+
+        attempt_number = u256(
+            int(current_count) + 1
+        )
+
+        review = ReviewRecord(
+            review_id=review_id,
+            bundle_id=bid,
+            attempt_number=attempt_number,
+            previous_review_id=(
+                previous_review_id
+            ),
+            review_kind=(
+                REVIEW_KIND_CHALLENGE
+            ),
+            challenge_request_id=cid,
+            policy_id=(
+                bundle_memory.policy_id
+            ),
+            policy_version=(
+                bundle_memory.policy_version
+            ),
+            reviewed_at=reviewed_at,
+            status=status,
+            fact_code=(
+                target_memory.fact_code
+            ),
+            primary_record_id=(
+                target_memory.primary_record_id
+            ),
+            verified_primary_version=(
+                target_memory.
+                verified_primary_version
+            ),
+            verified_primary_published_at=(
+                target_memory.
+                verified_primary_published_at
+            ),
+            qualifying_authority_set="",
+            excluded_authority_set="",
+            evidence_facts_canonical=(
+                canonical_result
+            ),
+            independent_corroborator_count=u256(0),
+            conflict_detected=(
+                conflict_detected
+            ),
+            reason_code=reason_code,
+        )
+
+        review_key = self._review_key(
+            review_id
+        )
+
+        self.reviews[
+            review_key
+        ] = review
+
+        self.review_exists[
+            review_key
+        ] = True
+
+        self.bundle_review_count[
+            bundle_key
+        ] = attempt_number
+
+        self.bundle_latest_review_id[
+            bundle_key
+        ] = review_id
+
+        self.bundle_latest_challenge_review_id[
+            bundle_key
+        ] = review_id
+
+        self.next_review_id = u256(
+            int(self.next_review_id) + 1
+        )
+
+        # CRITICAL:
+        #
+        # This is the only path that may clear an already-open challenge.
+        # It cannot reopen, replace, or retarget one.
+        if clear_open_challenge:
+            self.bundle_open_challenge_id[
+                bundle_key
+            ] = u256(0)
 
         return int(
             review_id
