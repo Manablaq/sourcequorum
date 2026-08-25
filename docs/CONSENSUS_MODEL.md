@@ -234,3 +234,33 @@ Only a later validator-backed materiality review may populate
 The free-form challenge reason is an untrusted claimant statement and
 must never be treated as authoritative evidence or executable prompt
 instructions.
+
+## Review-kind indexing and challenge targets
+
+SourceQuorum maintains separate latest-review pointers for different
+semantic purposes.
+
+`bundle_latest_review_id` tracks the latest append-only review of any
+kind and preserves the complete review-history chain.
+
+`bundle_latest_evidence_review_id` tracks the latest structured or
+semantic evidence adjudication.
+
+`bundle_latest_challenge_review_id` tracks the latest challenge
+materiality/adjudication review.
+
+This separation prevents an immaterial or unavailable challenge review
+from accidentally replacing the bundle's latest evidence adjudication.
+
+Every challenge request also binds `target_review_id` at submission
+time to the exact latest evidence review then known for the bundle.
+
+The target may be zero if no evidence adjudication exists yet.
+
+A later materiality review must not reinterpret such a request as
+targeting a subsequently created review. It must require an exact,
+still-current, admissible evidence target before consequentially
+opening a challenge.
+
+This prevents challenge requests from drifting across later evidence
+reviews or silently applying to a different adjudication.

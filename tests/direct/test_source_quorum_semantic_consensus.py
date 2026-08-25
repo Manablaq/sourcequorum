@@ -208,6 +208,7 @@ def build_scenario(contract):
 
     return {
         "bundle": bundle,
+        "corroborator_a": a,
         "locations": locations,
         "bodies": bodies,
     }
@@ -681,3 +682,126 @@ def test_classifier_cannot_use_self_as_derived_upstream(
         contract.review_semantic_independence(
             structured
         )
+
+
+def test_challenge_request_binds_exact_latest_evidence_review(
+    direct_vm,
+    direct_deploy,
+):
+    contract = deploy_contract(
+        direct_vm,
+        direct_deploy,
+    )
+
+    scenario = build_scenario(
+        contract
+    )
+
+    structured = create_structured_review(
+        contract,
+        direct_vm,
+        scenario,
+    )
+
+    assert (
+        contract.
+        get_latest_evidence_review_id(
+            scenario["bundle"]
+        )
+        == structured
+    )
+
+    mock_web(
+        direct_vm,
+        scenario,
+    )
+
+    mock_semantic(
+        direct_vm,
+    )
+
+    semantic = (
+        contract.
+        review_semantic_independence(
+            structured
+        )
+    )
+
+    assert (
+        contract.get_review_status(
+            semantic
+        )
+        == "ADMISSIBLE"
+    )
+
+    assert (
+        contract.
+        get_latest_evidence_review_id(
+            scenario["bundle"]
+        )
+        == semantic
+    )
+
+    assert (
+        contract.
+        get_latest_challenge_review_id(
+            scenario["bundle"]
+        )
+        == 0
+    )
+
+    direct_vm.clear_mocks()
+
+    challenge_id = (
+        contract.submit_challenge_request(
+            scenario["bundle"],
+            scenario["corroborator_a"],
+            1,
+            (
+                scenario["locations"]["a"]
+                + "?counter=v2"
+            ),
+            "counter-v2",
+            "sha256:" + "a" * 64,
+            "Counter-evidence challenges the result",
+        )
+    )
+
+    # Submission itself is not a review and does not change either
+    # evidence history or the global latest review.
+    assert (
+        contract.
+        get_challenge_target_review_id(
+            challenge_id
+        )
+        == semantic
+    )
+
+    assert (
+        contract.
+        get_latest_evidence_review_id(
+            scenario["bundle"]
+        )
+        == semantic
+    )
+
+    assert (
+        contract.get_latest_review_id(
+            scenario["bundle"]
+        )
+        == semantic
+    )
+
+    assert (
+        contract.
+        get_latest_challenge_review_id(
+            scenario["bundle"]
+        )
+        == 0
+    )
+
+    assert not (
+        contract.bundle_has_open_challenge(
+            scenario["bundle"]
+        )
+    )

@@ -89,6 +89,7 @@ class EvidenceRecord:
 class ChallengeRequest:
     challenge_id: u256
     bundle_id: u256
+    target_review_id: u256
     authority_id: u256
     authority_revision: u256
     submitted_by: Address
@@ -187,6 +188,8 @@ class SourceQuorum(gl.Contract):
 
     bundle_review_count: TreeMap[str, u256]
     bundle_latest_review_id: TreeMap[str, u256]
+    bundle_latest_evidence_review_id: TreeMap[str, u256]
+    bundle_latest_challenge_review_id: TreeMap[str, u256]
 
     def __init__(self, challenge_window_seconds: int):
         if challenge_window_seconds <= 0:
@@ -1335,6 +1338,12 @@ class SourceQuorum(gl.Contract):
         challenge = ChallengeRequest(
             challenge_id=challenge_id,
             bundle_id=bid,
+            target_review_id=(
+                self.bundle_latest_evidence_review_id.get(
+                    bundle_key,
+                    u256(0),
+                )
+            ),
             authority_id=aid,
             authority_revision=arev,
             submitted_by=(
@@ -2909,6 +2918,10 @@ class SourceQuorum(gl.Contract):
             bundle_key
         ] = review_id
 
+        self.bundle_latest_evidence_review_id[
+            bundle_key
+        ] = review_id
+
         self.next_review_id = u256(
             int(self.next_review_id) + 1
         )
@@ -4038,8 +4051,75 @@ class SourceQuorum(gl.Contract):
             bundle_key
         ] = review_id
 
+        self.bundle_latest_evidence_review_id[
+            bundle_key
+        ] = review_id
+
         self.next_review_id = u256(
             int(self.next_review_id) + 1
         )
 
         return int(review_id)
+
+
+    @gl.public.view
+    def get_latest_evidence_review_id(
+        self,
+        bundle_id: int,
+    ) -> int:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        self._require_bundle(
+            bid
+        )
+
+        return int(
+            self.bundle_latest_evidence_review_id.get(
+                self._bundle_key(
+                    bid
+                ),
+                u256(0),
+            )
+        )
+
+    @gl.public.view
+    def get_latest_challenge_review_id(
+        self,
+        bundle_id: int,
+    ) -> int:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        self._require_bundle(
+            bid
+        )
+
+        return int(
+            self.bundle_latest_challenge_review_id.get(
+                self._bundle_key(
+                    bid
+                ),
+                u256(0),
+            )
+        )
+
+    @gl.public.view
+    def get_challenge_target_review_id(
+        self,
+        challenge_id: int,
+    ) -> int:
+        cid = self._id(
+            challenge_id,
+            "challenge_id",
+        )
+
+        return int(
+            self._require_challenge(
+                cid
+            ).target_review_id
+        )
