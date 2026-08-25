@@ -1705,9 +1705,9 @@ class SourceQuorum(gl.Contract):
         bid = self._id(bundle_id, "bundle_id")
         self._require_bundle(bid)
 
-        # This map is intentionally never populated by mere request
-        # submission. Future validator-backed materiality review will
-        # be the only writer.
+        # This map is never populated by mere request submission.
+        # Validator-backed materiality may open it; validator-backed
+        # challenge resolution may clear it.
         return (
             self.bundle_open_challenge_id.get(
                 self._bundle_key(bid),
@@ -6052,6 +6052,392 @@ class SourceQuorum(gl.Contract):
 
         return int(
             review_id
+        )
+
+
+    # ------------------------------------------------------------------
+    # Consequential consumer admissibility gate
+    # ------------------------------------------------------------------
+    #
+    # Consumers MUST NOT reconstruct admissibility from a raw historical
+    # REVIEW_ADMISSIBLE value alone.
+    #
+    # A review is currently consequentially usable only while:
+    #
+    # - its bundle remains frozen and has not been superseded,
+    # - it is the exact latest evidence review for that bundle,
+    # - it is the validator-backed semantic ADMISSIBLE review,
+    # - the exact policy version remains sealed and active,
+    # - no validator-confirmed material challenge is open,
+    # - the primary evidence remains fresh,
+    # - every corroborating authority revision that actually counted
+    #   toward semantic admissibility remains approved, valid, and fresh.
+    #
+    # Mere challenge submission remains non-consequential and therefore
+    # does NOT invalidate this gate until validator-backed materiality
+    # actually opens the challenge.
+    #
+    # This gate is deterministic. It performs no web or LLM operation.
+    # ------------------------------------------------------------------
+
+    def _current_admissible_review_id(
+        self,
+        bundle_id: u256,
+    ) -> u256:
+        bundle = self._require_bundle(
+            bundle_id
+        )
+
+        bundle_key = self._bundle_key(
+            bundle_id
+        )
+
+        if not bundle.frozen:
+            return u256(0)
+
+        # Once a successor exists, the historical bundle must never remain
+        # a current source of consequential authorization.
+        if self.bundle_superseded_by.get(
+            bundle_key,
+            u256(0),
+        ) != u256(0):
+            return u256(0)
+
+        # Pending challenge requests are deliberately NOT checked here.
+        # Submission alone is non-consequential.
+        if self.bundle_open_challenge_id.get(
+            bundle_key,
+            u256(0),
+        ) != u256(0):
+            return u256(0)
+
+        review_id = (
+            self.bundle_latest_evidence_review_id.get(
+                bundle_key,
+                u256(0),
+            )
+        )
+
+        if review_id == u256(0):
+            return u256(0)
+
+        review = self._require_review(
+            review_id
+        )
+
+        if (
+            review.bundle_id
+            != bundle_id
+            or review.review_kind
+            != REVIEW_KIND_EVIDENCE
+            or review.status
+            != REVIEW_ADMISSIBLE
+            or review.reason_code
+            != "SEMANTIC_INDEPENDENCE_CONFIRMED"
+            or review.conflict_detected
+        ):
+            return u256(0)
+
+        # Exact immutable policy binding must remain intact.
+        if (
+            review.policy_id
+            != bundle.policy_id
+            or review.policy_version
+            != bundle.policy_version
+        ):
+            return u256(0)
+
+        policy = self._require_policy(
+            bundle.policy_id,
+            bundle.policy_version,
+        )
+
+        if not policy.sealed:
+            return u256(0)
+
+        policy_key = self._policy_key(
+            bundle.policy_id,
+            bundle.policy_version,
+        )
+
+        if self.policy_activated_at.get(
+            policy_key,
+            u256(0),
+        ) == u256(0):
+            return u256(0)
+
+        if (
+            review.independent_corroborator_count
+            < policy.minimum_independent_corroborators
+        ):
+            return u256(0)
+
+        now = self._now()
+        now_int = int(
+            now
+        )
+        maximum_age = int(
+            policy.maximum_evidence_age
+        )
+
+        if maximum_age <= 0:
+            return u256(0)
+
+        qualifying_raw = (
+            review.qualifying_authority_set
+        )
+
+        if not qualifying_raw:
+            return u256(0)
+
+        qualifying_tokens = (
+            qualifying_raw.split("|")
+        )
+
+        # The semantic layer creates this set from unique authority
+        # identities. Reject any corrupted/ambiguous representation.
+        qualifying_seen = {}
+
+        for token in qualifying_tokens:
+            if (
+                not token
+                or qualifying_seen.get(
+                    token,
+                    False,
+                )
+            ):
+                return u256(0)
+
+            qualifying_seen[
+                token
+            ] = False
+
+        primary_found = False
+
+        record_count = int(
+            bundle.record_count
+        )
+
+        if (
+            record_count <= 0
+            or record_count
+            > MAX_BUNDLE_EVIDENCE_RECORDS
+        ):
+            return u256(0)
+
+        for index in range(
+            1,
+            record_count + 1,
+        ):
+            record_id = (
+                self.bundle_record_ids.get(
+                    f"{bundle_key}|{index}",
+                    u256(0),
+                )
+            )
+
+            if record_id == u256(0):
+                return u256(0)
+
+            record_key = self._record_key(
+                record_id
+            )
+
+            if not self.record_exists.get(
+                record_key,
+                False,
+            ):
+                return u256(0)
+
+            record = self.records[
+                record_key
+            ]
+
+            if record.bundle_id != bundle_id:
+                return u256(0)
+
+            authority = self._require_authority(
+                record.authority_id,
+                record.authority_revision,
+            )
+
+            if not authority.sealed:
+                return u256(0)
+
+            authority_key = (
+                self._authority_key(
+                    record.authority_id,
+                    record.authority_revision,
+                )
+            )
+
+            identity = (
+                str(
+                    int(
+                        record.authority_id
+                    )
+                )
+                + ":"
+                + str(
+                    int(
+                        record.authority_revision
+                    )
+                )
+            )
+
+            is_primary_record = (
+                record.record_id
+                == bundle.primary_record_id
+            )
+
+            is_qualifying = (
+                identity
+                in qualifying_seen
+            )
+
+            if not (
+                is_primary_record
+                or is_qualifying
+            ):
+                continue
+
+            # Every authority revision that contributes to a currently
+            # usable decision must still be a valid exact authority
+            # revision. Revocation therefore fails closed.
+            if not self._authority_is_currently_valid(
+                authority
+            ):
+                return u256(0)
+
+            expected_role = (
+                ROLE_PRIMARY
+                if is_primary_record
+                else ROLE_CORROBORATOR
+            )
+
+            if not self.policy_authority_membership.get(
+                self._policy_authority_key(
+                    policy_key,
+                    expected_role,
+                    authority_key,
+                ),
+                False,
+            ):
+                return u256(0)
+
+            published_at = int(
+                record.claimed_published_at
+            )
+
+            # claimed_published_at is safe to use here only because the
+            # validator-backed structured and semantic reviews already
+            # verified it against the fetched immutable evidence record.
+            if (
+                published_at <= 0
+                or published_at > now_int
+                or (
+                    now_int
+                    - published_at
+                    > maximum_age
+                )
+            ):
+                return u256(0)
+
+            if is_primary_record:
+                if (
+                    not record.is_primary
+                    or review.primary_record_id
+                    != record.record_id
+                    or review.verified_primary_version
+                    != record.version_reference
+                    or review.verified_primary_published_at
+                    != record.claimed_published_at
+                ):
+                    return u256(0)
+
+                primary_found = True
+
+            if is_qualifying:
+                # The primary authority may never satisfy a corroborator
+                # identity in the semantic qualifying set.
+                if record.is_primary:
+                    return u256(0)
+
+                if qualifying_seen[
+                    identity
+                ]:
+                    return u256(0)
+
+                qualifying_seen[
+                    identity
+                ] = True
+
+        if not primary_found:
+            return u256(0)
+
+        # Every exact identity that earned semantic admissibility must map
+        # back to one currently fresh, valid, policy-approved bundle record.
+        for token in qualifying_tokens:
+            if not qualifying_seen.get(
+                token,
+                False,
+            ):
+                return u256(0)
+
+        return review_id
+
+    @gl.public.view
+    def get_current_admissible_review_id(
+        self,
+        bundle_id: int,
+    ) -> int:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        return int(
+            self._current_admissible_review_id(
+                bid
+            )
+        )
+
+    @gl.public.view
+    def is_bundle_currently_admissible(
+        self,
+        bundle_id: int,
+    ) -> bool:
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        return (
+            self._current_admissible_review_id(
+                bid
+            )
+            != u256(0)
+        )
+
+    @gl.public.view
+    def is_review_currently_admissible(
+        self,
+        review_id: int,
+    ) -> bool:
+        rid = self._id(
+            review_id,
+            "review_id",
+        )
+
+        review = self._require_review(
+            rid
+        )
+
+        return (
+            self._current_admissible_review_id(
+                review.bundle_id
+            )
+            == rid
         )
 
 
