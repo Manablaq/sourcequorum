@@ -203,3 +203,34 @@ evidence of independence.
 Leader and validator must agree on these exact provenance fields.
 The contract, not the LLM, derives the qualifying authority set,
 independent quorum count, conflict result, and final admissibility.
+
+## Challenge evidence binding
+
+A challenge request is non-consequential, but its counter-evidence is
+still bound before validator materiality review.
+
+Every challenge request identifies:
+
+- the exact frozen bundle and policy version
+- an exact authority ID and authority revision
+- a location under that authority revision's pre-approved origin
+- an explicit immutable/version reference
+- a SHA-256 evidence digest
+- the submitter's untrusted reason
+
+The authority revision must be sealed, currently valid, and explicitly
+approved as either a primary or corroborating authority in the exact
+policy version used by the bundle.
+
+An arbitrary user-selected URL or digest is therefore insufficient to
+become challenge evidence.
+
+Request submission still has no consequential blocking effect.
+It may populate only `bundle_pending_challenge_id`.
+
+Only a later validator-backed materiality review may populate
+`bundle_open_challenge_id`.
+
+The free-form challenge reason is an untrusted claimant statement and
+must never be treated as authoritative evidence or executable prompt
+instructions.

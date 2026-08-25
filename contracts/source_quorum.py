@@ -89,8 +89,11 @@ class EvidenceRecord:
 class ChallengeRequest:
     challenge_id: u256
     bundle_id: u256
+    authority_id: u256
+    authority_revision: u256
     submitted_by: Address
     evidence_reference: str
+    version_reference: str
     evidence_digest: str
     reason: str
     submitted_at: u256
@@ -1081,19 +1084,40 @@ class SourceQuorum(gl.Contract):
     def submit_challenge_request(
         self,
         bundle_id: int,
+        authority_id: int,
+        authority_revision: int,
         evidence_reference: str,
+        version_reference: str,
         evidence_digest: str,
         reason: str,
     ) -> int:
-        bid = self._id(bundle_id, "bundle_id")
-        bundle = self._require_bundle(bid)
+        bid = self._id(
+            bundle_id,
+            "bundle_id",
+        )
+
+        aid = self._id(
+            authority_id,
+            "authority_id",
+        )
+
+        arev = self._id(
+            authority_revision,
+            "authority_revision",
+        )
+
+        bundle = self._require_bundle(
+            bid
+        )
 
         if not bundle.frozen:
             raise gl.vm.UserError(
                 "Only frozen bundles can receive challenge requests"
             )
 
-        bundle_key = self._bundle_key(bid)
+        bundle_key = self._bundle_key(
+            bid
+        )
 
         if self.bundle_superseded_by.get(
             bundle_key,
@@ -1103,23 +1127,175 @@ class SourceQuorum(gl.Contract):
                 "Superseded bundle cannot receive challenge request"
             )
 
-        normalized_reference = evidence_reference.strip()
-        normalized_digest = evidence_digest.strip()
-        normalized_reason = reason.strip()
+        # --------------------------------------------------------
+        # Bind counter-evidence to the exact immutable policy.
+        # --------------------------------------------------------
+
+        policy = self._require_policy(
+            bundle.policy_id,
+            bundle.policy_version,
+        )
+
+        if not policy.sealed:
+            raise gl.vm.UserError(
+                "Bundle policy version is not sealed"
+            )
+
+        policy_key = self._policy_key(
+            bundle.policy_id,
+            bundle.policy_version,
+        )
+
+        if self.policy_activated_at.get(
+            policy_key,
+            u256(0),
+        ) == u256(0):
+            raise gl.vm.UserError(
+                "Bundle policy version is not active"
+            )
+
+        authority = self._require_authority(
+            aid,
+            arev,
+        )
+
+        if not authority.sealed:
+            raise gl.vm.UserError(
+                "Challenge authority revision must be sealed"
+            )
+
+        if not self._authority_is_currently_valid(
+            authority
+        ):
+            raise gl.vm.UserError(
+                "Challenge authority revision is not currently valid"
+            )
+
+        authority_key = self._authority_key(
+            aid,
+            arev,
+        )
+
+        primary_membership = (
+            self.policy_authority_membership.get(
+                self._policy_authority_key(
+                    policy_key,
+                    ROLE_PRIMARY,
+                    authority_key,
+                ),
+                False,
+            )
+        )
+
+        corroborator_membership = (
+            self.policy_authority_membership.get(
+                self._policy_authority_key(
+                    policy_key,
+                    ROLE_CORROBORATOR,
+                    authority_key,
+                ),
+                False,
+            )
+        )
+
+        if not (
+            primary_membership
+            or corroborator_membership
+        ):
+            raise gl.vm.UserError(
+                "Challenge authority is not approved by bundle policy"
+            )
+
+        normalized_reference = (
+            evidence_reference.strip()
+        )
+
+        normalized_version = (
+            version_reference.strip()
+        )
+
+        normalized_digest = (
+            evidence_digest.strip()
+        )
+
+        normalized_reason = (
+            reason.strip()
+        )
 
         if not normalized_reference:
             raise gl.vm.UserError(
                 "Challenge request requires evidence reference"
             )
 
-        if not normalized_reference.startswith("https://"):
+        if not normalized_reference.startswith(
+            "https://"
+        ):
             raise gl.vm.UserError(
                 "Challenge evidence reference must use https://"
+            )
+
+        # --------------------------------------------------------
+        # The selected location must be within one of the exact
+        # pre-approved origins of this authority revision.
+        # --------------------------------------------------------
+
+        origin_count = int(
+            self.authority_origin_count.get(
+                authority_key,
+                u256(0),
+            )
+        )
+
+        location_is_approved = False
+
+        for index in range(
+            1,
+            origin_count + 1,
+        ):
+            origin = self.authority_origins.get(
+                f"{authority_key}|{index}",
+                "",
+            )
+
+            if (
+                origin
+                and self._location_matches_origin(
+                    normalized_reference,
+                    origin,
+                )
+            ):
+                location_is_approved = True
+                break
+
+        if not location_is_approved:
+            raise gl.vm.UserError(
+                "Challenge evidence reference is not under "
+                "an approved authority origin"
+            )
+
+        if not normalized_version:
+            raise gl.vm.UserError(
+                "Challenge request requires version reference"
             )
 
         if not normalized_digest:
             raise gl.vm.UserError(
                 "Challenge request requires evidence digest"
+            )
+
+        # SourceQuorum v1 objective review uses SHA-256.
+        if (
+            not normalized_digest.startswith(
+                "sha256:"
+            )
+            or len(normalized_digest) != 71
+            or any(
+                char not in "0123456789abcdefABCDEF"
+                for char in normalized_digest[7:]
+            )
+        ):
+            raise gl.vm.UserError(
+                "Challenge evidence digest must be sha256"
             )
 
         if not normalized_reason:
@@ -1135,8 +1311,6 @@ class SourceQuorum(gl.Contract):
                 "Bundle already has a pending challenge request"
             )
 
-        # A confirmed open challenge, once the validator-backed review
-        # layer exists, also prevents a second pending request.
         if self.bundle_open_challenge_id.get(
             bundle_key,
             u256(0),
@@ -1147,38 +1321,72 @@ class SourceQuorum(gl.Contract):
 
         now = self._now()
 
-        challenge_id = self.next_challenge_id
+        challenge_id = (
+            self.next_challenge_id
+        )
+
         self.next_challenge_id = u256(
-            int(self.next_challenge_id) + 1
+            int(
+                self.next_challenge_id
+            )
+            + 1
         )
 
         challenge = ChallengeRequest(
             challenge_id=challenge_id,
             bundle_id=bid,
-            submitted_by=gl.message.sender_address,
-            evidence_reference=normalized_reference,
-            evidence_digest=normalized_digest,
+            authority_id=aid,
+            authority_revision=arev,
+            submitted_by=(
+                gl.message.sender_address
+            ),
+            evidence_reference=(
+                normalized_reference
+            ),
+            version_reference=(
+                normalized_version
+            ),
+            evidence_digest=(
+                normalized_digest.lower()
+            ),
             reason=normalized_reason,
             submitted_at=now,
             deadline=u256(
-                int(now) + int(self.challenge_window_seconds)
+                int(now)
+                + int(
+                    self.challenge_window_seconds
+                )
             ),
             expired=False,
         )
 
-        challenge_key = self._challenge_key(challenge_id)
+        challenge_key = (
+            self._challenge_key(
+                challenge_id
+            )
+        )
 
-        self.challenges[challenge_key] = challenge
-        self.challenge_exists[challenge_key] = True
+        self.challenges[
+            challenge_key
+        ] = challenge
 
-        # Deliberately pending only.
+        self.challenge_exists[
+            challenge_key
+        ] = True
+
+        # CRITICAL:
         #
-        # DO NOT set bundle_open_challenge_id here.
+        # This remains only a request.
+        #
+        # Validator-backed materiality review is the only future
+        # path allowed to populate bundle_open_challenge_id.
         self.bundle_pending_challenge_id[
             bundle_key
         ] = challenge_id
 
-        return int(challenge_id)
+        return int(
+            challenge_id
+        )
 
     @gl.public.write
     def expire_challenge_request(

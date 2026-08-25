@@ -610,15 +610,48 @@ def test_challenge_request_is_not_consequential_before_review(
         ):
             contract.submit_challenge_request(
                 bundle_id,
-                "https://counter.example/record/42",
+                corroborator_a,
+                1,
+                "https://a.example/challenges/42",
+                "counter-v1",
                 "",
                 "Counter-evidence exists",
             )
 
+        with direct_vm.expect_revert(
+            "Challenge request requires version reference"
+        ):
+            contract.submit_challenge_request(
+                bundle_id,
+                corroborator_a,
+                1,
+                "https://a.example/challenges/missing-version",
+                "",
+                "sha256:" + "a" * 64,
+                "Missing immutable version",
+            )
+
+        with direct_vm.expect_revert(
+            "Challenge evidence reference is not under "
+            "an approved authority origin"
+        ):
+            contract.submit_challenge_request(
+                bundle_id,
+                corroborator_a,
+                1,
+                "https://a.example.evil.test/challenges/42",
+                "counter-v1",
+                "sha256:" + "b" * 64,
+                "Lookalike origin",
+            )
+
         challenge_id = contract.submit_challenge_request(
             bundle_id,
-            "https://counter.example/record/42",
-            "sha256:counter-evidence",
+            corroborator_a,
+            1,
+            "https://a.example/challenges/42",
+            "counter-v1",
+            "sha256:" + "c" * 64,
             "Counter-evidence may contradict the bundle",
         )
 
@@ -647,8 +680,11 @@ def test_challenge_request_is_not_consequential_before_review(
         ):
             contract.submit_challenge_request(
                 bundle_id,
-                "https://another.example/record/99",
-                "sha256:second",
+                corroborator_b,
+                1,
+                "https://b.example/challenges/99",
+                "counter-v1",
+                "sha256:" + "d" * 64,
                 "Another allegation",
             )
 
@@ -712,7 +748,101 @@ def test_superseded_bundle_cannot_receive_new_challenge_request(
         ):
             contract.submit_challenge_request(
                 old_bundle,
-                "https://counter.example/old-record",
-                "sha256:old-counter",
+                corroborator_a,
+                1,
+                "https://a.example/challenges/old-record",
+                "counter-v1",
+                "sha256:" + "e" * 64,
                 "Old bundle allegation",
             )
+
+
+def test_challenge_counter_evidence_must_use_policy_approved_authority(
+    direct_vm,
+    direct_deploy,
+    direct_alice,
+    direct_bob,
+):
+    contract = deploy_contract(
+        direct_vm,
+        direct_deploy,
+    )
+
+    (
+        policy_id,
+        primary,
+        corroborator_a,
+        corroborator_b,
+    ) = create_active_policy(
+        contract
+    )
+
+    # Valid authority revision, but deliberately NOT registered
+    # in this policy version.
+    unapproved = contract.create_authority(
+        "Unapproved challenge authority",
+        "UNAPPROVED_CHALLENGE_GROUP",
+        0,
+    )
+
+    contract.add_authority_origin(
+        unapproved,
+        1,
+        "https://unapproved-challenge.example",
+    )
+
+    contract.seal_authority_revision(
+        unapproved,
+        1,
+    )
+
+    with direct_vm.prank(
+        direct_alice
+    ):
+        bundle_id = contract.create_bundle(
+            policy_id,
+            1,
+            "Flight SQ42 was cancelled",
+        )
+
+        add_bundle_records(
+            contract,
+            bundle_id,
+            primary,
+            corroborator_a,
+            corroborator_b,
+        )
+
+        contract.freeze_bundle(
+            bundle_id
+        )
+
+    with direct_vm.prank(
+        direct_bob
+    ):
+        with direct_vm.expect_revert(
+            "Challenge authority is not approved by bundle policy"
+        ):
+            contract.submit_challenge_request(
+                bundle_id,
+                unapproved,
+                1,
+                "https://unapproved-challenge.example/records/1",
+                "counter-v1",
+                "sha256:" + "f" * 64,
+                "Unapproved counter-evidence source",
+            )
+
+    # Failed submission never creates either pending or open state.
+    assert not (
+        contract.
+        bundle_has_pending_challenge_request(
+            bundle_id
+        )
+    )
+
+    assert not (
+        contract.bundle_has_open_challenge(
+            bundle_id
+        )
+    )
