@@ -16,7 +16,7 @@ consensus, validator-backed challenge materiality and resolution,
 freshness-bound consumer admissibility, resource limits, and adversarial
 evidence/prompt tests.
 
-Supported-runtime validator verification remains pending.
+Bradbury supported-runtime consensus mechanism verification is complete; deployed SourceQuorum contract-path verification remains pending.
 
 No Bradbury deployment exists yet.
 
@@ -51,6 +51,6 @@ open-challenge state.
 5. Validator-backed challenge materiality and resolution — complete
 6. Freshness-bound consumer admissibility gate — complete
 7. Adversarial Direct Mode validation — complete (75/75)
-8. Supported-runtime validator verification — pending
+8. Bradbury supported-runtime consensus mechanism verification — complete
 9. Bradbury deployment and live finality verification — pending
 10. Frontend integration and reviewer source/deployment parity audit — pending

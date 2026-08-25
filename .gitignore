@@ -27,3 +27,6 @@ dist/
 # Editors
 .vscode/
 .idea/
+
+# Reproducible supported-runtime evidence
+artifacts/supported-runtime/
