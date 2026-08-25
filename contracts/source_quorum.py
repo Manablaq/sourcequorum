@@ -2115,6 +2115,55 @@ class SourceQuorum(gl.Contract):
     # semantic validator layer is added.
     # ------------------------------------------------------------------
 
+    def _require_no_challenge_target_drift(
+        self,
+        bundle_id: u256,
+    ) -> None:
+        bundle_key = self._bundle_key(
+            bundle_id
+        )
+
+        # Confirmed material challenge:
+        # always blocks creation of newer evidence adjudication.
+        if self.bundle_open_challenge_id.get(
+            bundle_key,
+            u256(0),
+        ) != u256(0):
+            raise gl.vm.UserError(
+                "Bundle has an open challenge"
+            )
+
+        pending_id = (
+            self.bundle_pending_challenge_id.get(
+                bundle_key,
+                u256(0),
+            )
+        )
+
+        if pending_id == u256(0):
+            return
+
+        pending = self._require_challenge(
+            pending_id
+        )
+
+        # A request submitted before any evidence adjudication
+        # permanently targets zero. It cannot retroactively acquire
+        # the first evidence review and therefore cannot grief-block it.
+        if (
+            pending.target_review_id
+            == u256(0)
+        ):
+            return
+
+        # A pending request that already targets a real evidence
+        # adjudication freezes that target until materiality is
+        # resolved or the pending request legitimately expires.
+        raise gl.vm.UserError(
+            "Bundle has a pending challenge against evidence review"
+        )
+
+
     @gl.public.write
     def review_frozen_bundle(
         self,
@@ -2133,6 +2182,10 @@ class SourceQuorum(gl.Contract):
             )
 
         bundle_key = self._bundle_key(bid)
+
+        self._require_no_challenge_target_drift(
+            bid
+        )
 
         if self.bundle_superseded_by.get(
             bundle_key,
@@ -2960,6 +3013,10 @@ class SourceQuorum(gl.Contract):
 
         bid = storage_structured.bundle_id
         bundle_key = self._bundle_key(bid)
+
+        self._require_no_challenge_target_drift(
+            bid
+        )
 
         if (
             self.bundle_latest_review_id.get(

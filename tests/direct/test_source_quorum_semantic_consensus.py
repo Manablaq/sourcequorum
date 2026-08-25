@@ -805,3 +805,247 @@ def test_challenge_request_binds_exact_latest_evidence_review(
             scenario["bundle"]
         )
     )
+
+
+
+def test_pending_challenge_against_structured_review_blocks_semantic_drift(
+    direct_vm,
+    direct_deploy,
+):
+    contract = deploy_contract(
+        direct_vm,
+        direct_deploy,
+    )
+
+    scenario = build_scenario(
+        contract
+    )
+
+    structured = create_structured_review(
+        contract,
+        direct_vm,
+        scenario,
+    )
+
+    challenge_id = (
+        contract.submit_challenge_request(
+            scenario["bundle"],
+            scenario["corroborator_a"],
+            1,
+            (
+                scenario["locations"]["a"]
+                + "?challenge=semantic-drift"
+            ),
+            "counter-v2",
+            "sha256:" + "b" * 64,
+            "Challenge pending before semantic completion",
+        )
+    )
+
+    assert (
+        contract.
+        get_challenge_target_review_id(
+            challenge_id
+        )
+        == structured
+    )
+
+    with direct_vm.expect_revert(
+        "Bundle has a pending challenge against evidence review"
+    ):
+        contract.review_semantic_independence(
+            structured
+        )
+
+    assert (
+        contract.
+        get_latest_evidence_review_id(
+            scenario["bundle"]
+        )
+        == structured
+    )
+
+    assert not (
+        contract.bundle_has_open_challenge(
+            scenario["bundle"]
+        )
+    )
+
+
+def test_pending_challenge_against_admissible_review_blocks_structured_drift(
+    direct_vm,
+    direct_deploy,
+):
+    contract = deploy_contract(
+        direct_vm,
+        direct_deploy,
+    )
+
+    scenario = build_scenario(
+        contract
+    )
+
+    structured = create_structured_review(
+        contract,
+        direct_vm,
+        scenario,
+    )
+
+    mock_web(
+        direct_vm,
+        scenario,
+    )
+
+    mock_semantic(
+        direct_vm,
+    )
+
+    admissible = (
+        contract.
+        review_semantic_independence(
+            structured
+        )
+    )
+
+    assert (
+        contract.get_review_status(
+            admissible
+        )
+        == "ADMISSIBLE"
+    )
+
+    direct_vm.clear_mocks()
+
+    challenge_id = (
+        contract.submit_challenge_request(
+            scenario["bundle"],
+            scenario["corroborator_a"],
+            1,
+            (
+                scenario["locations"]["a"]
+                + "?challenge=structured-drift"
+            ),
+            "counter-v2",
+            "sha256:" + "c" * 64,
+            "Challenge targets the admissible review",
+        )
+    )
+
+    assert (
+        contract.
+        get_challenge_target_review_id(
+            challenge_id
+        )
+        == admissible
+    )
+
+    with direct_vm.expect_revert(
+        "Bundle has a pending challenge against evidence review"
+    ):
+        contract.review_frozen_bundle(
+            scenario["bundle"]
+        )
+
+    assert (
+        contract.
+        get_latest_evidence_review_id(
+            scenario["bundle"]
+        )
+        == admissible
+    )
+
+    assert (
+        contract.get_latest_review_id(
+            scenario["bundle"]
+        )
+        == admissible
+    )
+
+
+def test_pre_adjudication_challenge_target_zero_cannot_grief_block_first_review(
+    direct_vm,
+    direct_deploy,
+):
+    contract = deploy_contract(
+        direct_vm,
+        direct_deploy,
+    )
+
+    scenario = build_scenario(
+        contract
+    )
+
+    assert (
+        contract.
+        get_latest_evidence_review_id(
+            scenario["bundle"]
+        )
+        == 0
+    )
+
+    challenge_id = (
+        contract.submit_challenge_request(
+            scenario["bundle"],
+            scenario["corroborator_a"],
+            1,
+            (
+                scenario["locations"]["a"]
+                + "?challenge=pre-adjudication"
+            ),
+            "counter-v2",
+            "sha256:" + "d" * 64,
+            "Request submitted before adjudication",
+        )
+    )
+
+    assert (
+        contract.
+        get_challenge_target_review_id(
+            challenge_id
+        )
+        == 0
+    )
+
+    # target_review_id == 0 cannot retroactively acquire the first
+    # evidence adjudication as its target.
+    mock_web(
+        direct_vm,
+        scenario,
+    )
+
+    structured = (
+        contract.review_frozen_bundle(
+            scenario["bundle"]
+        )
+    )
+
+    assert structured > 0
+
+    assert (
+        contract.get_review_reason_code(
+            structured
+        )
+        == "SEMANTIC_INDEPENDENCE_UNVERIFIED"
+    )
+
+    assert (
+        contract.
+        get_latest_evidence_review_id(
+            scenario["bundle"]
+        )
+        == structured
+    )
+
+    assert (
+        contract.
+        get_challenge_target_review_id(
+            challenge_id
+        )
+        == 0
+    )
+
+    assert not (
+        contract.bundle_has_open_challenge(
+            scenario["bundle"]
+        )
+    )

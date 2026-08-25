@@ -264,3 +264,25 @@ opening a challenge.
 
 This prevents challenge requests from drifting across later evidence
 reviews or silently applying to a different adjudication.
+
+## Challenge target anti-drift invariant
+
+A pending challenge with a nonzero `target_review_id` freezes the exact
+evidence adjudication it targets until the pending challenge is resolved
+or expires.
+
+While such a request remains pending, neither structured nor semantic
+evidence review may create a newer evidence adjudication for the bundle.
+
+This prevents a caller from bypassing challenge materiality merely by
+manufacturing a newer evidence review.
+
+A request submitted before any evidence adjudication exists has
+`target_review_id = 0`.
+
+A zero target has no retroactive consequential power. It cannot acquire
+a subsequently created evidence review as its target and therefore
+cannot grief-block creation of the first adjudication.
+
+A confirmed open challenge always blocks fresh evidence adjudication
+until a dedicated fresh challenge-resolution path resolves it.
