@@ -1,5 +1,7 @@
 # SourceQuorum Deterministic Baseline
 
+Historical checkpoint. This file records the deterministic foundation as verified on 2026-08-24; it is not the current project-status document. See `README.md` and `docs/CONSENSUS_MODEL.md` for the current implemented state.
+
 Verified: 2026-08-24
 
 ## Scope

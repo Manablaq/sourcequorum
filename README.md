@@ -8,7 +8,15 @@ corroboration policy before that evidence may affect consequential state.
 
 ## Status
 
-Initial deterministic protocol implementation in progress.
+The v1 Intelligent Contract is implemented and Direct Mode verified.
+
+The complete Direct Mode regression suite passes 75/75 tests as of
+2026-08-25, including structured evidence review, semantic provenance
+consensus, validator-backed challenge materiality and resolution,
+freshness-bound consumer admissibility, resource limits, and adversarial
+evidence/prompt tests.
+
+Supported-runtime validator verification remains pending.
 
 No Bradbury deployment exists yet.
 
@@ -19,15 +27,30 @@ the exact immutable policy version and GenLayer validators independently
 agree on all consequential evidence findings used by deterministic policy
 evaluation.
 
+## Current admissibility rule
+
+An `ADMISSIBLE` review is not a permanent permit.
+
+At consumer-use time SourceQuorum re-checks that the exact latest evidence
+review is still admissible, the exact bundle has not been superseded, the
+bound policy version is still valid for use, the evidence that supports the
+decision is still fresh, the contributing authority revisions are still
+current and approved for their exact roles, and no validator-confirmed open
+challenge exists.
+
+A pending challenge request alone is non-consequential and does not block
+consumer use. Only validator-backed materiality may create consequential
+open-challenge state.
+
 ## Development phases
 
-1. Deterministic authority and policy versioning
-2. Immutable evidence bundle lifecycle
-3. Challenge and supersession invariants
-4. Evidence-use permit
-5. Independent GenLayer evidence adjudication
-6. Adversarial Direct Mode validation
-7. Supported-runtime validator verification
-8. Bradbury deployment and live finality verification
-9. Frontend integration
-10. Reviewer-readiness and source/deployment parity audit
+1. Deterministic authority and policy versioning — complete
+2. Immutable evidence bundle lifecycle — complete
+3. Append-only evidence review and exact consensus binding — complete
+4. Semantic provenance/independence adjudication — complete
+5. Validator-backed challenge materiality and resolution — complete
+6. Freshness-bound consumer admissibility gate — complete
+7. Adversarial Direct Mode validation — complete (75/75)
+8. Supported-runtime validator verification — pending
+9. Bradbury deployment and live finality verification — pending
+10. Frontend integration and reviewer source/deployment parity audit — pending

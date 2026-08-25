@@ -17,3 +17,14 @@
 13. Counter-evidence unable to trigger a fresh review.
 14. Old review remaining usable after evidence expiration.
 15. Repository source differing from deployed or submitted Explorer source.
+
+
+16. Oversized external evidence consuming review resources before rejection.
+
+17. Untrusted evidence or metadata injecting instructions into semantic prompts.
+
+18. Challenge resolution clearing consequential state without exact fresh same-authority binding and validator agreement.
+
+19. A merely pending challenge request grief-blocking consumer use.
+
+20. Prompt defenses being documented as stronger guarantees than they provide.

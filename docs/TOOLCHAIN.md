@@ -41,3 +41,7 @@ Reviewer-facing reproduction must use `requirements-lock.txt`.
 No GenLayer dependency revision may change without rerunning the
 complete deterministic, consensus, supported-runtime, and release
 verification gates applicable at that stage.
+
+## Current verification state
+
+As of 2026-08-25, Python 3.12.14 is in use and the complete SourceQuorum Direct Mode suite passes 75/75 tests, including adversarial evidence resource-bound and prompt-boundary coverage. Supported-runtime validator verification remains pending. Bradbury deployment and live finality verification remain pending.

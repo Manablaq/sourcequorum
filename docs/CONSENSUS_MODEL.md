@@ -286,3 +286,16 @@ cannot grief-block creation of the first adjudication.
 
 A confirmed open challenge always blocks fresh evidence adjudication
 until a dedicated fresh challenge-resolution path resolves it.
+
+## Current evidence hardening
+
+Fetched evidence is bounded to 32 KiB per response body. Semantic independence review is additionally bounded to 128 KiB aggregate evidence content. Oversized input is rejected before hashing, decoding, JSON parsing, or semantic prompt processing. Semantic, challenge-materiality, and challenge-resolution oversize failures use explicit fail-closed reason codes.
+
+Dynamic claims, metadata, authority information, and evidence content are serialized deterministically as JSON inside explicit `BEGIN_UNTRUSTED_CONTEXT_JSON` / `END_UNTRUSTED_CONTEXT_JSON` boundaries. This is defense in depth, not a guarantee of prompt-injection immunity.
+## Current consequence invariants
+
+Structured evidence review, semantic independence review, challenge materiality, and challenge resolution all require exact validator equality with the leader result. No tolerance band is used for consequential state.
+
+An open challenge may be cleared only by validator-backed fresh resolution evidence exactly bound to the same challenge, target review, authority revision, target fact, challenged version, and challenged digest. A valid same-authority `RETRACT` may clear it; invalid, stale, unavailable, changed, or oversized resolution evidence cannot.
+
+Historical `ADMISSIBLE` status is not a permanent permit. Consumer use re-checks the exact latest evidence review, bundle supersession, evidence freshness, current approved authority revisions, and validator-confirmed open-challenge state. A merely pending challenge request remains non-consequential.
